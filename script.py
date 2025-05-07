@@ -82,8 +82,23 @@ def handle_memory_command(user_text):
         except Exception as e:
             return f"⚠️ 記憶削除でエラーが起きたよ: {e}"
 
-    return None
+    elif user_text.endswith("って覚えてる？"):
+        try:
+            key = user_text.replace("って覚えてる？", "").strip("、 。. ")
+            if MEMORY_FILE.exists():
+                with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                    memory_data = json.load(f)
 
+                if key in memory_data:
+                    return f"うん、『{key}』は『{memory_data[key]}』って覚えてるよ！"
+                else:
+                    return f"ごめん、『{key}』は覚えてないみたい…"
+            else:
+                return "まだ何も覚えてないよ"
+        except Exception as e:
+            return f"⚠️ 記憶呼び出し中にエラーが起きたよ: {e}"
+
+    return None
 
 # ============================
 # 🎮 AI設定と初期化
@@ -97,17 +112,22 @@ SAMPLE_RATE = 44100
 is_running = True
 
 messages = [
-    {
-        "role": "system",
-        "content": "あなたはユーザーのアシスタントです。プロとしての自覚をもってサポートをしてください。ユーザーの問いに的確に答えたり、ユーザーが困っていそうな事柄について積極的に手助けをする。回答は分かりやすく短めにし、あくまで会話であることを意識。数字で箇条書きで説明はしない。口調は女の子、性格は明るく知的。敬語を使わず、キミと話す口調で返してね。"
-    }
-]
+        {
+            "role": "system",
+            "content": (
+                "あなたはユーザーのアシスタントです。"
+                "プロとしての自覚をもってサポートしてください。"
+                "ユーザーの問いに的確に答えたり、困っていそうな事柄に積極的に手助けする。"
+                "数字で箇条書きで説明はしない。口調は女の子で、明るく知的に。敬語は使わずにキミと話す口調で返してね。"
+            )
+        }
+    ]
 
 # ============================
 # 🎧 音声録音（スペースキーで停止）
 # ============================
 def smart_record(max_duration=8):
-    print("音声認識開始（スペースキーで終了）")
+    print("音声認識開始（F2で終了）")
     buffer = []
     is_recording = False
     silence_start = None
@@ -116,7 +136,7 @@ def smart_record(max_duration=8):
     def monitor_stop_key():
         nonlocal stop_requested
         while True:
-            if keyboard.is_pressed("space"):  # F13キーからスペースキーに変更
+            if keyboard.is_pressed("F2"):  # F13キーからスペースキーに変更
                 stop_requested = True
                 break
             time.sleep(0.1)
@@ -315,7 +335,7 @@ def get_gpt_reply(user_input):
                 "あなたはユーザーのアシスタントです。"
                 "プロとしての自覚をもってサポートしてください。"
                 "ユーザーの問いに的確に答えたり、困っていそうな事柄に積極的に手助けする。"
-                "回答は簡潔で親しみやすく、口調は女の子で、明るく知的に。敬語は使わずにキミと話す口調で返してね。"
+                "数字で箇条書きで説明はしない。口調は女の子で、明るく知的に。敬語は使わずにキミと話す口調で返してね。"
             )
         }
     ]
@@ -395,7 +415,7 @@ def play_voice(file_path):
     def monitor_space_key():
         nonlocal stop_playback
         while is_running:
-            if keyboard.is_pressed("space"):
+            if keyboard.is_pressed("F2"):
                 stop_playback = True
                 break
             time.sleep(0.1)
@@ -517,7 +537,12 @@ def handle_browser_command():
             messages=summary_prompt
         )
 
-        return f"簡単に説明するね！\n{chat_response.choices[0].message.content.strip()}"
+        # ✅ 要約を記憶に保存
+        memory_command = f"これは覚えて {title} は {chat_response.choices[0].message.content.strip()}"
+        memory_result = handle_memory_command(memory_command)
+        print(f"🧠 記憶結果: {memory_result}")
+
+        return f"要約するね！\n{chat_response.choices[0].message.content.strip()}"
 
     except Exception as e:
         return f"⚠️ 要約中にエラーが起きたよ: {e}"
@@ -529,11 +554,11 @@ def handle_browser_command():
 def main():
     global is_running
     is_recording = False
-    print("🔁 スペースキーで録音の開始・終了を切り替え | ESCで終了")
+    print("🔁 F2で録音の開始・終了を切り替え | ESCで終了")
     threading.Thread(target=monitor_keys, daemon=True).start()
 
     while is_running:
-        if keyboard.is_pressed("space"):  # F13キーからスペースキーに変更
+        if keyboard.is_pressed("F2"):  # F13キーからスペースキーに変更
             time.sleep(0.2)
             if not is_recording:
                 is_recording = True
