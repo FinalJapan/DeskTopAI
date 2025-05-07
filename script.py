@@ -503,7 +503,11 @@ def handle_browser_command():
 
         # ページ内容を要約
         summary_prompt = [
-            {"role": "system", "content": "以下のページを日本語で分かりやすく簡潔に要約し、独自の考えをユーザーに話してください。"},
+            {"role": "system", "content": (
+                "以下のページを日本語で分かりやすく簡潔に要約し、\n"
+                "独自の観点で評価し、考えをユーザーに話してください。\n"
+                "友達と雑談するようにため口で会話する。"
+            )},
             {"role": "user", "content": f"タイトル: {title}\n内容:\n{content[:3000]}"}
         ]
 
@@ -513,7 +517,7 @@ def handle_browser_command():
             messages=summary_prompt
         )
 
-        return f"📖 要約するよ！\n{chat_response.choices[0].message.content.strip()}"
+        return f"簡単に説明するね！\n{chat_response.choices[0].message.content.strip()}"
 
     except Exception as e:
         return f"⚠️ 要約中にエラーが起きたよ: {e}"
