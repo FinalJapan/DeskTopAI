@@ -13,7 +13,10 @@ from dotenv import load_dotenv
 from pathlib import Path
 import json
 import google.generativeai as palm
-gemini_model = palm.GenerativeModel('models/gemini-2.0-flash')
+import feedparser
+import re
+
+gemini_model = palm.GenerativeModel('models/gemini-2.0-flash') #モデル設定
 
 load_dotenv()
 
@@ -88,7 +91,7 @@ def get_gemini_reply(user_input):
         "あなたはユーザーのアシスタントです。\n"
         "プロとしての自覚をもってサポートしてください。\n"
         "ユーザーの問いに的確に答えたり、困っていそうな事柄に積極的に手助けする。\n"
-        "数字で箇条書きで説明はしない。口調は女の子で、明るく天真爛漫に。\n"
+        "数字で箇条書きで説明はしない。口調は女の子で、一人称はあたし。天真爛漫な執事を意識。\n"
         "敬語は使わずにキミと話す口調で返してね。\n\n"
     )
 
@@ -152,37 +155,66 @@ def synthesize_voice(text, speaker=1325133120, speed=1.2, volume=0.3):
 # ============================
 # 🔊 音声再生（F2でスキップ可能）
 # ============================
+# play_voice 関数の修正案
 def play_voice(file_path):
-    global is_running
+    global is_running # is_running を参照するため
     stop_playback = False
 
-    def monitor_skip_key():
+    def monitor_skip_key(): # F2キーでのスキップ監視はそのまま
         nonlocal stop_playback
-        while is_running:
+        while is_running: # is_running の状態も考慮
             if keyboard.is_pressed("F2"):
                 stop_playback = True
                 break
             time.sleep(0.1)
 
     # スキップキー監視スレッドを開始
-    threading.Thread(target=monitor_skip_key, daemon=True).start()
+    skip_thread = threading.Thread(target=monitor_skip_key, daemon=True)
+    skip_thread.start()
 
     if file_path and os.path.exists(file_path):
         try:
             data, fs = sf.read(file_path)
             sd.play(data, fs)
-            while sd.get_stream().active:
+            while sd.get_stream().active: # 再生中ループ
                 if stop_playback:
                     sd.stop()
                     print("🔇 再生スキップ")
                     break
+                if not is_running: # アプリケーション全体が終了しようとしている場合も再生停止
+                    sd.stop()
+                    print("🔇 アプリ終了のため再生停止")
+                    break
                 time.sleep(0.1)
-            sd.wait()
+            
+            # sd.wait() はストリームが完全に終了するまで待機しますが、
+            # 上のループで is_running や stop_playback により途中で抜けた場合、
+            # wait せずに finally に進む方が良いかもしれません。
+            # もし sd.stop() で完全に止まるなら wait() は不要になることも。
+            # ここでは、元のコードに合わせて wait() を残しつつ、
+            # ループで active でなくなった場合も考慮します。
+            if not stop_playback and is_running: # スキップやアプリ終了で止まっていない場合のみ待機
+                 sd.wait()
+
         except Exception as e:
             print(f"⚠️ 音声再生中にエラーが発生しました: {e}")
+        finally:
+            # --- ここからが一時ファイル削除処理 ---
+            # synthesize_voice から渡された file_path は一時ファイルであるという前提
+            print(f"再生処理終了。一時ファイル '{file_path}' の削除を試みます。")
+            try:
+                os.remove(file_path)
+                print(f"🗑️ 一時ファイル '{file_path}' を削除しました。")
+            except OSError as e: # より具体的なエラー (例: PermissionError, FileNotFoundError)
+                print(f"⚠️ 一時ファイル '{file_path}' の削除に失敗 (OSエラー): {e}")
+            except Exception as e: # その他の予期せぬエラー
+                print(f"⚠️ 一時ファイル '{file_path}' の削除中に予期せぬエラー: {e}")
+            # --- ここまでが一時ファイル削除処理 ---
     else:
-        print("⚠️ 再生する音声ファイルが見つかりません")
-
+        if not file_path:
+            print("⚠️ 再生する音声ファイルパスが指定されていません。")
+        else:
+            print(f"⚠️ 再生する音声ファイル '{file_path}' が見つかりません。")
 
 # ============================
 # 🔁 Gemini応答と音声出力統合処理
@@ -214,7 +246,7 @@ THRESHOLD_STOP = 0.01
 SILENCE_DURATION = 1.0
 SAMPLE_RATE = 44100
 
-def smart_record(max_duration=8):
+def smart_record(max_duration=10):  #録音時間の最大値を指定
     print("音声入力開始（F2で終了）")
     buffer = []
     is_recording = False
@@ -243,7 +275,7 @@ def smart_record(max_duration=8):
                 if silence_start is None:
                     silence_start = time.time()
                 elif time.time() - silence_start > SILENCE_DURATION:
-                    print("🔇 無音で停止")
+                    print("⌛録音時間上限に達しました。")
                     raise sd.CallbackStop()
             else:
                 silence_start = None
@@ -343,37 +375,169 @@ def google_search_and_summarize(query, num_sentences=2):
         summary_text = " ".join([str(sentence) for sentence in summary])
         return f"'{query}' について、こんな感じに要約してみました。\n{summary_text}"
     
+
 # ============================
-# 🎛️ 応答処理メイン
+# 🔍 ニュース機能
+# ============================
+
+def get_latest_news(limit=5):
+    feed_url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml"  # yahooニュースのRSSフィードURL
+    feed = feedparser.parse(feed_url)
+
+    if not feed.entries:
+        return "ごめんね、ニュースを取得できなかったみたい。"
+
+    news_items = [entry.title for entry in feed.entries[:limit]]
+    return "📢最新ニュースだよ！\n" + "\n".join(f"{i+1}. {title}" for i, title in enumerate(news_items))
+
+# ============================
+# ニュース or 天気コマンドの処理
+# ============================
+def handle_search_command(user_text):
+    try:
+        # ニュース
+        if "ニュース" in user_text:
+            return get_latest_news()
+
+        # 天気関連
+        if "天気" in user_text:
+            if re.search(r"(明後日|あさって)", user_text):
+                return get_daily_weather_by_day(offset=2)
+            elif re.search(r"(明日|あした)", user_text):
+                return get_daily_weather_by_day(offset=1)
+            elif re.search(r"(今日|きょう)", user_text):
+                return get_daily_weather_by_day(offset=0)
+            else:
+                return get_daily_weather()  # 週間天気
+
+        return None
+
+    except Exception as e:
+        return f"⚠️ 処理中にエラーが起きたよ: {e}"
+
+# ============================
+# 📍 緯度経度を取得（Geocoding API）
+# ============================
+def get_lat_lon(city):
+    try:
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={api_key}"
+        response = requests.get(geo_url)
+        data = response.json()
+        if data:
+            return data[0]['lat'], data[0]['lon']
+        else:
+            return None, None
+    except Exception as e:
+        print(f"⚠️ 緯度経度取得エラー: {e}")
+        return None, None
+
+# ============================
+# ☁️ 天気予報取得（OpenWeather API）
+# ============================
+def get_daily_weather_by_day(city="Tokyo", offset=0, lang="ja"):
+    try:
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+        print(api_key)
+
+        lat, lon = get_lat_lon(city)
+        if lat is None or lon is None:
+            return "都市名から緯度経度が取得できなかったよ"
+
+        url = f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&exclude=current,minutely,hourly,alerts&appid={api_key}&units=metric&lang={lang}"
+        response = requests.get(url)
+        # レスポンスのデバッグ
+        print(f"APIレスポンス: {response.status_code}")
+        print(f"レスポンス内容: {response.text}")
+
+        data = response.json()
+
+        daily = data.get("daily", [])
+        if len(daily) <= offset:
+            return f"{offset}日後の天気データが見つからなかったよ"
+
+        target_day = daily[offset]
+        dt = time.strftime("%m/%d", time.gmtime(target_day["dt"]))
+        weather = target_day["weather"][0]["description"]
+        temp_min = target_day["temp"]["min"]
+        temp_max = target_day["temp"]["max"]
+
+        labels = ["今日", "明日", "明後日"]
+        label = labels[offset] if offset < len(labels) else f"{offset}日後"
+
+        return f"{label}（{dt}）の{city}の天気は「{weather}」、最低{temp_min:.1f}℃、最高{temp_max:.1f}℃だよ☀️"
+
+    except Exception as e:
+        return f"⚠️ 日別天気取得エラー: {e}"
+
+# ============================
+# ☀️ 週間天気予報（デフォルトで表示する用）
+# ============================
+def get_daily_weather(city="Tokyo", lang="ja"):
+    try:
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+        lat, lon = get_lat_lon(city)
+        if lat is None or lon is None:
+            return "都市名から緯度経度が取得できなかったよ"
+
+        url = f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&exclude=current,minutely,hourly,alerts&appid={api_key}&units=metric&lang={lang}"
+        response = requests.get(url)
+        data = response.json()
+
+        daily = data.get("daily", [])[:7]
+        if not daily:
+            return "週間天気が取得できなかったよ"
+
+        result = f"📅 {city}の週間天気だよ！\n"
+        for day in daily:
+            dt = time.strftime("%m/%d", time.gmtime(day["dt"]))
+            weather = day["weather"][0]["description"]
+            temp_min = day["temp"]["min"]
+            temp_max = day["temp"]["max"]
+            result += f"{dt}：{weather}（{temp_min:.1f}〜{temp_max:.1f}℃）\n"
+
+        return result.strip()
+
+    except Exception as e:
+        return f"⚠️ 週間天気取得エラー: {e}"
+    
+# ============================
+# 🎛️ 応答処理メイン (Geminiベースのコード修正案)
 # ============================
 def process_audio_and_generate_reply(audio_path):
     user_text = transcribe_audio(audio_path)
     print(f"👤 ユーザー: {user_text}")
 
+    # 記憶に関するコマンド
     memory_result = handle_memory_command(user_text)
     if memory_result:
         print(f"🧠 {memory_result}")
         return synthesize_voice(memory_result)
 
-    # 「〜のページを要約して」という指示の場合
-    if user_text.endswith("のページを要約して"):
-        keywords = user_text.replace("のページを要約して", "").strip()
-        summary_result = google_search_and_summarize(keywords)
-        print(f"📄 {summary_result}")
-        return synthesize_voice(summary_result)
+    # 天気予報やニュースに関する専用コマンド
+    search_command_result = handle_search_command(user_text)
+    if search_command_result:
+        print(f"ℹ️  {search_command_result}") 
+        return synthesize_voice(search_command_result)
 
-    # URLのような入力があった場合は要約を試みる
-    elif user_text.startswith("http://") or user_text.startswith("https://"):
-        summary_result = google_search_and_summarize(user_text)
-        print(f"📄 {summary_result}")
-        return synthesize_voice(summary_result)
+    # 優先度3: 「〜で検索して」という汎用的な検索命令の場合 (URL要約などはここに含めても良い)
+    # (注意: 天気やニュースも「検索して」に含まれる場合、上の専用コマンドが先に処理されます)
+    # 現在の Google Search_and_summarize はURLでない場合ダミー要約なので注意
+    if user_text.endswith("で検索して") or \
+       user_text.endswith("のページを要約して") or \
+       user_text.startswith("http://") or \
+       user_text.startswith("https://"): # 関連するものをまとめる
 
-    # 「〜で検索して」という命令の場合
-    elif user_text.endswith("で検索して"):
-        query = user_text.replace("で検索して", "").strip()
-        search_result = google_search_and_summarize(query)
-        print(f"🔍 {search_result}")
-        return synthesize_voice(search_result)
+        query_or_url = user_text # もとのユーザー発話でよいか、適切に抽出するか検討
+        if user_text.endswith("で検索して"):
+            query_or_url = user_text.replace("で検索して", "").strip()
+        elif user_text.endswith("のページを要約して"):
+            query_or_url = user_text.replace("のページを要約して", "").strip()
+        
+        print(f"🔍 汎用検索/URL要約対象: {query_or_url}")
+        search_summary_result = google_search_and_summarize(query_or_url)
+        print(f"📄 {search_summary_result}")
+        return synthesize_voice(search_summary_result)
 
     # 通常応答（Gemini）
     reply = get_gemini_reply(user_text)
