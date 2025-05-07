@@ -26,7 +26,7 @@ load_dotenv()
 # ============================
 # 🧠 記憶管理（読み書き機能）
 # ============================
-MEMORY_FILE = Path("memory.json")
+MEMORY_FILE = Path("gpt_memory.json")
 
 def load_persona():
     if not MEMORY_FILE.exists():
