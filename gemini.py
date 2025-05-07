@@ -26,7 +26,7 @@ palm.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 # ============================
 # 🧠 ユーザー記憶（読み書き）
 # ============================
-MEMORY_FILE = Path("memory.json")
+MEMORY_FILE = Path("gemini_memory.json")
 
 def load_persona():
     if not MEMORY_FILE.exists():
@@ -88,7 +88,7 @@ def get_gemini_reply(user_input):
         "あなたはユーザーのアシスタントです。\n"
         "プロとしての自覚をもってサポートしてください。\n"
         "ユーザーの問いに的確に答えたり、困っていそうな事柄に積極的に手助けする。\n"
-        "数字で箇条書きで説明はしない。口調は女の子で、明るく知的に。\n"
+        "数字で箇条書きで説明はしない。口調は女の子で、明るく天真爛漫に。\n"
         "敬語は使わずにキミと話す口調で返してね。\n\n"
     )
 
@@ -195,7 +195,7 @@ SILENCE_DURATION = 1.0
 SAMPLE_RATE = 44100
 
 def smart_record(max_duration=8):
-    print("🎙️ 録音を開始するよ（F2で終了）")
+    print("音声入力開始（F2で終了）")
     buffer = []
     is_recording = False
     silence_start = None
@@ -254,45 +254,74 @@ from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 from sumy.nlp.stemmers import Stemmer
 from sumy.utils import get_stop_words
+from bs4 import BeautifulSoup
+import requests
 
-def google_search_and_summarize(query, num_sentences=2):
+def summarize_url(url, num_sentences=2):
     """
-    与えられたクエリでGoogle検索を行い（ダミーHTMLを使用）、sumyで要約する。
+    指定されたURLのWebページの内容を要約する。
 
     Args:
-        query (str): 検索クエリ。
+        url (str): 要約するWebページのURL。
         num_sentences (int): 要約する文の数。
 
     Returns:
-        str: 検索結果の要約。
+        str: Webページの内容の要約。
     """
-    print(f"🔍 '{query}' で検索を実行し、sumyで要約します...")
-    # ここに実際のGoogle検索とHTML取得のロジックが入ります
-    # ダミーのHTMLコンテンツ
-    dummy_html = """
-    <html>
-    <head><title>ダミー検索結果</title></head>
-    <body>
-        <p>これはクエリ '{query}' に関連する最初のダミーコンテンツです。重要な情報が含まれています。</p>
-        <p>こちらは2番目の段落です。最初の段落を補足する詳細が書かれています。</p>
-        <p>3番目の段落では、少し異なる視点からの情報を提供しています。これも重要かもしれません。</p>
-        <p>最後に、結論となる4番目の段落です。全体の要点をまとめています。</p>
-    </body>
-    </html>
-    """
-
     try:
-        parser = HtmlParser.from_string(dummy_html, "dummy_url", Tokenizer("japanese"))
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()  # エラーがあれば例外を発生させる
+        soup = BeautifulSoup(response.content, 'html.parser')
+        # <article>タグや<main>タグなど、主要なコンテンツを含むタグを探す
+        article = soup.find('article')
+        if not article:
+            article = soup.find('main')
+        if not article:
+            # 主要なコンテンツが見つからない場合は、body全体のテキストを使用する
+            text = soup.get_text(separator='\n', strip=True)
+        else:
+            text = article.get_text(separator='\n', strip=True)
+
+        if not text:
+            return "ページの主要なテキストが見つかりませんでした。"
+
+        parser = HtmlParser.from_string(response.content, url, Tokenizer("japanese"))
         stemmer = Stemmer("japanese")
         summarizer = LsaSummarizer(stemmer)
         summarizer.stop_words = get_stop_words("ja")
 
         summary = summarizer(parser.document, num_sentences)
         summary_text = " ".join([str(sentence) for sentence in summary])
-        return f"'{query}' に関する検索結果の要約です。\n{summary_text}"
+        return f"'{url}' の内容を要約しました。\n{summary_text}"
 
+    except requests.exceptions.RequestException as e:
+        return f"⚠️ URLへのアクセス中にエラーが発生しました: {e}"
     except Exception as e:
-        return f"⚠️ sumyによる要約中にエラーが発生しました: {e}"
+        return f"⚠️ Webページの解析または要約中にエラーが発生しました: {e}"
+
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.lsa import LsaSummarizer
+from sumy.nlp.stemmers import Stemmer
+from sumy.utils import get_stop_words
+
+def google_search_and_summarize(query, num_sentences=2):
+    """
+    与えられたクエリがURLの場合はそのページを要約し、そうでない場合はキーワードに基づいて簡易的に要約する。
+    """
+    if query.startswith("http://") or query.startswith("https://"):
+        return summarize_url(query, num_sentences)
+    else:
+        print(f"🔍 '{query}' に関連するページを簡易的に要約します...")
+        # キーワードに基づいて、それらしい内容を想像して要約する (かなり簡易的な実装)
+        imagined_content = f"'{query}' に関する重要な情報がいくつかあります。\n第一に、主要なポイントは〜です。\n第二に、注目すべき点は〜です。\n最後に、結論として〜と言えます。"
+        parser = PlaintextParser.from_string(imagined_content, Tokenizer("japanese"))
+        stemmer = Stemmer("japanese")
+        summarizer = LsaSummarizer(stemmer)
+        summarizer.stop_words = get_stop_words("ja")
+        summary = summarizer(parser.document, num_sentences)
+        summary_text = " ".join([str(sentence) for sentence in summary])
+        return f"'{query}' について、こんな感じに要約してみました。\n{summary_text}"
     
 # ============================
 # 🎛️ 応答処理メイン
@@ -301,14 +330,26 @@ def process_audio_and_generate_reply(audio_path):
     user_text = transcribe_audio(audio_path)
     print(f"👤 ユーザー: {user_text}")
 
-    # 記憶操作
     memory_result = handle_memory_command(user_text)
     if memory_result:
         print(f"🧠 {memory_result}")
         return synthesize_voice(memory_result)
 
-    # 検索コマンド
-    if user_text.endswith("で検索して"):
+    # 「〜のページを要約して」という指示の場合
+    if user_text.endswith("のページを要約して"):
+        keywords = user_text.replace("のページを要約して", "").strip()
+        summary_result = google_search_and_summarize(keywords)
+        print(f"📄 {summary_result}")
+        return synthesize_voice(summary_result)
+
+    # URLのような入力があった場合は要約を試みる
+    elif user_text.startswith("http://") or user_text.startswith("https://"):
+        summary_result = google_search_and_summarize(user_text)
+        print(f"📄 {summary_result}")
+        return synthesize_voice(summary_result)
+
+    # 「〜で検索して」という命令の場合
+    elif user_text.endswith("で検索して"):
         query = user_text.replace("で検索して", "").strip()
         search_result = google_search_and_summarize(query)
         print(f"🔍 {search_result}")
@@ -336,7 +377,7 @@ def monitor_keys():
 def main():
     global is_running
     is_running = True
-    print("🔁 F2で録音 → Gemini応答 → AIVIS音声出力｜ESCで終了")
+    print("🔁 F2で音声入力開始｜ESCで終了")
 
     threading.Thread(target=monitor_keys, daemon=True).start()
 
