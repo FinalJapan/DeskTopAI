@@ -150,13 +150,33 @@ def synthesize_voice(text, speaker=1325133120, speed=1.2, volume=0.3):
         return None
 
 # ============================
-# 🔊 音声再生
+# 🔊 音声再生（F2でスキップ可能）
 # ============================
 def play_voice(file_path):
+    global is_running
+    stop_playback = False
+
+    def monitor_skip_key():
+        nonlocal stop_playback
+        while is_running:
+            if keyboard.is_pressed("F2"):
+                stop_playback = True
+                break
+            time.sleep(0.1)
+
+    # スキップキー監視スレッドを開始
+    threading.Thread(target=monitor_skip_key, daemon=True).start()
+
     if file_path and os.path.exists(file_path):
         try:
             data, fs = sf.read(file_path)
             sd.play(data, fs)
+            while sd.get_stream().active:
+                if stop_playback:
+                    sd.stop()
+                    print("🔇 再生スキップ")
+                    break
+                time.sleep(0.1)
             sd.wait()
         except Exception as e:
             print(f"⚠️ 音声再生中にエラーが発生しました: {e}")
@@ -399,4 +419,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
