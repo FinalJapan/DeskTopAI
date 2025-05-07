@@ -248,7 +248,7 @@ def smart_record(max_duration=8):
             else:
                 silence_start = None
         if stop_requested:
-            print("🛑 手動で停止")
+            print("🔚 音声認識終了")
             raise sd.CallbackStop()
 
     try:
