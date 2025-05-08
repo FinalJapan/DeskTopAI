@@ -49,9 +49,9 @@ def save_persona(new_data):
         json.dump(memory_data, f, indent=2, ensure_ascii=False)
 
 def handle_memory_command(user_text):
-    if user_text.startswith("これは覚えて"):
+    if user_text.startswith("覚えて"):
         try:
-            info = user_text.replace("これは覚えて", "").strip()
+            info = user_text.replace("覚えて", "").strip()
             if "は" in info:
                 key, value = info.split("は", 1)
                 key = key.strip("、 。. ") 
@@ -136,7 +136,7 @@ def smart_record(max_duration=8):
     def monitor_stop_key():
         nonlocal stop_requested
         while True:
-            if keyboard.is_pressed("F2"):  # F13キーからスペースキーに変更
+            if keyboard.is_pressed("F2"):  # F2キーで録音停止
                 stop_requested = True
                 break
             time.sleep(0.1)
@@ -182,11 +182,6 @@ def smart_record(max_duration=8):
 # ============================
 # 🔍 検索機能
 # ============================
-def web_search_duckduckgo(query, max_results=3):
-    with DDGS() as ddgs:
-        results = ddgs.text(query, max_results=max_results)
-        summaries = [r["body"] for r in results if "body" in r]
-        return "\n".join(summaries)
 
 def get_latest_news(limit=5):
     feed_url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml"  # yahooニュースのRSSフィードURL
@@ -199,7 +194,7 @@ def get_latest_news(limit=5):
     return "📢最新ニュースだよ！\n" + "\n".join(f"{i+1}. {title}" for i, title in enumerate(news_items))
 
 # ============================
-# 🔍 検索 or ニュース or 天気コマンドの処理
+# ニュース or 天気コマンドの処理
 # ============================
 def handle_search_command(user_text):
     try:
@@ -217,24 +212,6 @@ def handle_search_command(user_text):
                 return get_daily_weather_by_day(offset=0)
             else:
                 return get_daily_weather()  # 週間天気
-
-        # DuckDuckGo検索
-        if user_text.endswith("で検索して"):
-            keyword = user_text.replace("で検索して", "").strip(" 、。.")
-            print(f"🌐 検索キーワード: {keyword}")
-            search_result = web_search_duckduckgo(keyword)
-            if not search_result.strip():
-                return "ごめんね、うまく情報が見つからなかったみたい。もう少し別の言い方で教えてくれる？"
-
-            summary_prompt = [
-                {"role": "system", "content": "以下の検索結果を簡単に要約してユーザーに説明して"},
-                {"role": "user", "content": search_result}
-            ]
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=summary_prompt
-            )
-            return response.choices[0].message.content.strip()
 
         return None
 
@@ -406,34 +383,67 @@ def synthesize_voice(text, speaker=1325133120, speed=1.2, volume=0.3):
         return None
 
 # ============================
-# 🔊 音声再生
+# 🔊 音声再生（F2でスキップ可能）
 # ============================
 def play_voice(file_path):
-    global is_running
+    global is_running # is_running を参照するため
     stop_playback = False
 
-    def monitor_space_key():
+    def monitor_skip_key(): # F2キーでのスキップ監視はそのまま
         nonlocal stop_playback
-        while is_running:
+        while is_running: # is_running の状態も考慮
             if keyboard.is_pressed("F2"):
                 stop_playback = True
                 break
             time.sleep(0.1)
 
-    threading.Thread(target=monitor_space_key, daemon=True).start()
+    # スキップキー監視スレッドを開始
+    skip_thread = threading.Thread(target=monitor_skip_key, daemon=True)
+    skip_thread.start()
 
     if file_path and os.path.exists(file_path):
-        data, fs = sf.read(file_path)
-        sd.play(data, fs)
-        while sd.get_stream().active:
-            if stop_playback:
-                sd.stop()
-                print("🔇 再生スキップ")
-                break
-            time.sleep(0.1)
-        sd.wait()
+        try:
+            data, fs = sf.read(file_path)
+            sd.play(data, fs)
+            while sd.get_stream().active: # 再生中ループ
+                if stop_playback:
+                    sd.stop()
+                    print("🔇 再生スキップ")
+                    break
+                if not is_running: # アプリケーション全体が終了しようとしている場合も再生停止
+                    sd.stop()
+                    print("🔇 アプリ終了のため再生停止")
+                    break
+                time.sleep(0.1)
+            
+            # sd.wait() はストリームが完全に終了するまで待機しますが、
+            # 上のループで is_running や stop_playback により途中で抜けた場合、
+            # wait せずに finally に進む方が良いかもしれません。
+            # もし sd.stop() で完全に止まるなら wait() は不要になることも。
+            # ここでは、元のコードに合わせて wait() を残しつつ、
+            # ループで active でなくなった場合も考慮します。
+            if not stop_playback and is_running: # スキップやアプリ終了で止まっていない場合のみ待機
+                 sd.wait()
+
+        except Exception as e:
+            print(f"⚠️ 音声再生中にエラーが発生しました: {e}")
+        finally:
+            # --- ここからが一時ファイル削除処理 ---
+            # synthesize_voice から渡された file_path は一時ファイルであるという前提
+            print(f"再生処理終了。一時ファイル '{file_path}' の削除を試みます。")
+            try:
+                os.remove(file_path)
+                print(f"🗑️ 一時ファイル '{file_path}' を削除しました。")
+            except OSError as e: # より具体的なエラー (例: PermissionError, FileNotFoundError)
+                print(f"⚠️ 一時ファイル '{file_path}' の削除に失敗 (OSエラー): {e}")
+            except Exception as e: # その他の予期せぬエラー
+                print(f"⚠️ 一時ファイル '{file_path}' の削除中に予期せぬエラー: {e}")
+            # --- ここまでが一時ファイル削除処理 ---
     else:
-        print("⚠️ 音声ファイルが見つかりません")
+        if not file_path:
+            print("⚠️ 再生する音声ファイルパスが指定されていません。")
+        else:
+            print(f"⚠️ 再生する音声ファイル '{file_path}' が見つかりません。")
 
 # ============================
 # ⌨️ ESCキーで終了
@@ -458,13 +468,6 @@ def process_audio_and_generate_reply(audio_path):
     if memory_result:
         print(f"🧠 {memory_result}")
         voice_path = synthesize_voice(memory_result)
-        return voice_path
-
-    # ② 検索指示（〇〇で検索して）
-    search_result = handle_search_command(user_text)
-    if search_result:
-        print(f"🔍 {search_result}")
-        voice_path = synthesize_voice(search_result)
         return voice_path
 
     # ③ ブラウザ情報指示（「今見てるページ要約して」）
@@ -536,17 +539,9 @@ def handle_browser_command():
             model="gpt-4o",
             messages=summary_prompt
         )
-
-        # ✅ 要約を記憶に保存
-        memory_command = f"これは覚えて {title} は {chat_response.choices[0].message.content.strip()}"
-        memory_result = handle_memory_command(memory_command)
-        print(f"🧠 記憶結果: {memory_result}")
-
-        return f"要約するね！\n{chat_response.choices[0].message.content.strip()}"
-
+        return chat_response.choices[0].message.content.strip()
     except Exception as e:
-        return f"⚠️ 要約中にエラーが起きたよ: {e}"
-
+        return f"要約生成中にエラーが発生しました: {e}"
 
 # ============================
 # 🚀 メインループ
